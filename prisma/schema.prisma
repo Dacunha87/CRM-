@@ -1,0 +1,222 @@
+// Modèle de données du CRM Ventes (MVP).
+// Règles structurantes :
+//  - Une Activité est toujours rattachée à une Entreprise ; le Contact et l'Opportunité sont optionnels.
+//  - Le commercial ne voit que ses propres données ; la chefia voit tout (voir src/lib/scope.ts).
+//  - Montants en CHF, stockés en Decimal(12,2).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  commercial
+  chefia
+}
+
+enum StageKind {
+  OPEN
+  WON
+  LOST
+}
+
+enum ActivityType {
+  VISITE
+  APPEL
+  EMAIL
+  NOTE
+}
+
+// ---------- Authentification (tables attendues par @auth/prisma-adapter) ----------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  role          Role      @default(commercial)
+  // Objectif de chiffre d'affaires (CHF) pour le calcul du coverage ratio.
+  quota         Decimal   @default(0) @db.Decimal(12, 2)
+  createdAt     DateTime  @default(now())
+
+  accounts      Account[]
+  sessions      Session[]
+  companies     Company[]
+  contacts      Contact[]
+  opportunities Opportunity[]
+  activities    Activity[]
+  tasks         Task[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------- Métier ----------
+
+model Stage {
+  id          String    @id @default(cuid())
+  name        String
+  order       Int       @unique
+  probability Int // en pourcentage, 0 à 100
+  kind        StageKind @default(OPEN)
+
+  opportunities Opportunity[]
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  city      String?
+  canton    String? // code canton suisse, ex. "VD", "GE"
+  industry  String?
+  website   String?
+  phone     String?
+  address   String?
+  notes     String?  @db.Text
+  ownerId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner         User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  contacts      Contact[]
+  opportunities Opportunity[]
+  activities    Activity[]
+  tasks         Task[]
+
+  @@index([ownerId])
+  @@index([name])
+}
+
+model Contact {
+  id              String   @id @default(cuid())
+  firstName       String
+  lastName        String
+  email           String?
+  phone           String?
+  jobTitle        String?
+  isDecisionMaker Boolean  @default(false)
+  companyId       String
+  ownerId         String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  owner         User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  opportunities Opportunity[]
+  activities    Activity[]
+
+  @@index([companyId])
+}
+
+model Opportunity {
+  id                String    @id @default(cuid())
+  title             String
+  amount            Decimal   @default(0) @db.Decimal(12, 2)
+  currency          String    @default("CHF")
+  expectedCloseDate DateTime?
+  stageId           String
+  stageChangedAt    DateTime  @default(now())
+  closedAt          DateTime?
+  lostReason        String?
+  companyId         String
+  contactId         String?
+  ownerId           String
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  stage      Stage      @relation(fields: [stageId], references: [id])
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contact    Contact?   @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  owner      User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  activities Activity[]
+  tasks      Task[]
+
+  @@index([ownerId, stageId])
+  @@index([companyId])
+}
+
+model Activity {
+  // Identifiant généré côté client (UUID) pour rendre la synchronisation hors ligne idempotente.
+  id            String       @id @default(cuid())
+  type          ActivityType
+  summary       String       @db.Text
+  occurredAt    DateTime
+  durationMin   Int?
+  latitude      Float?
+  longitude     Float?
+  // Photo compressée côté client, encodée en data URL (limitée à ~400 Ko côté serveur).
+  photo         String?      @db.Text
+  hasPhoto      Boolean      @default(false)
+  companyId     String
+  contactId     String?
+  opportunityId String?
+  authorId      String
+  createdAt     DateTime     @default(now())
+
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  author      User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  tasks       Task[]
+
+  @@index([authorId, occurredAt])
+  @@index([companyId])
+}
+
+model Task {
+  id            String    @id @default(cuid())
+  title         String
+  dueAt         DateTime
+  done          Boolean   @default(false)
+  completedAt   DateTime?
+  ownerId       String
+  companyId     String?
+  opportunityId String?
+  activityId    String?
+  createdAt     DateTime  @default(now())
+
+  owner       User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  company     Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  activity    Activity?    @relation(fields: [activityId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId, done, dueAt])
+}

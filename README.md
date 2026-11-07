@@ -45,6 +45,11 @@ CRM mobile-first pour commerciaux terrain en Suisse romande. Développé avec Ne
 ### 2. Base de données PostgreSQL (Neon)
 - Allez sur neon.tech → Sign up avec GitHub → Create project
 - Copiez la `DATABASE_URL` (format: `postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`)
+- Depuis votre ordinateur, créez les tables et les données initiales (une seule fois) :
+```bash
+DATABASE_URL="postgresql://..." npm run db:push
+DATABASE_URL="postgresql://..." npm run db:seed
+```
 
 ### 3. Déploiement Vercel
 - Allez sur vercel.com → Import Project → Sélectionnez `crm-mvp`
@@ -64,13 +69,17 @@ EMAIL_FROM=CRM <votre-email@gmail.com>
 ### 4. Domaine Propre (optionnel)
 - Vercel → Project → Domains → Add → pointez CNAME vers `cname.vercel-dns.com`
 
-### 5. Seed Initial (une seule fois)
-- Vercel → Functions → `POST /api/seed` (crée stages pipeline + users demo)
+### 5. Données initiales
+- Le seed (`npm run db:seed`, étape 2) crée les 7 étapes du pipeline et les comptes démo.
+- Il n'existe volontairement pas de route publique de seed : elle serait déclenchable par n'importe qui en production.
+- Pour ajouter un utilisateur réel, insérez-le dans la table `User` (email, nom, rôle `commercial` ou `chefia`). Seuls les comptes existants reçoivent un lien de connexion.
 
 ## 🔐 Comptes Démo
 Après le seed :
-- **Commercial** : `commercial@demo.ch` (rôle: commercial)
-- **Chefia** : `chefia@demo.ch` (rôle: chefia)
+- **Commercial** : `commercial@demo.ch` (rôle: commercial, ne voit que ses données)
+- **Chefia** : `chefia@demo.ch` (rôle: chefia, voit toutes les données)
+
+En développement sans SMTP configuré, le lien de connexion est affiché dans le terminal (`[auth] Lien de connexion pour …`). En production, `EMAIL_SERVER_HOST` est obligatoire.
 
 ## 📱 Utilisation Mobile (PWA)
 1. Ouvrez l'URL sur iPhone/Android
@@ -91,62 +100,61 @@ Après le seed :
 - Coverage ratio pipeline/quota (cible: 3x)
 - Win rate (cible: 30%)
 
-## 🛠️ Développement Local (optionnel)
+## 🛠️ Développement Local
 
 ```bash
-# Installer dépendances
+# Installer dépendances (le lockfile est versionné)
 npm install
 
 # Configurer variables d'environnement
 cp .env.example .env
-# Éditez .env avec vos valeurs
+# Éditez .env avec vos valeurs (DATABASE_URL pointant vers une base de test)
 
 # Base de données
-npm run db:generate
-npm run db:push
-npm run db:seed
+npm run db:push     # crée les tables
+npm run db:seed     # étapes du pipeline + comptes démo
 
 # Développement
-npm run dev
-# → http://localhost:3000
+npm run dev         # → http://localhost:3000
 ```
+
+Autres commandes : `npm run typecheck`, `npm run lint`, `npm test` (tests unitaires : fuseau horaire, formatage, KPIs).
 
 ## 📁 Structure du Projet
 
 ```
-crm-mvp/
-├── prisma/
-│   ├── schema.prisma      # Modèles DB
-│   └── seed.ts            # Données démo
-├── public/
-│   ├── manifest.json      # PWA manifest
-│   └── icons/             # Icônes PWA (à générer)
-├── src/
-│   ├── app/
-│   │   ├── (auth)/login/  # Page magic link
-│   │   ├── (dashboard)/   # Pages protégées
-│   │   │   ├── page.tsx           # Dashboard KPIs
-│   │   │   ├── pipeline/page.tsx  # Kanban
-│   │   │   ├── entreprises/       # CRUD entreprises
-│   │   │   ├── opportunites/      # CRUD opportunités
-│   │   │   └── taches/            # Liste tâches
-│   │   └── api/           # Routes API (REST)
-│   ├── components/
-│   │   ├── ui/            # shadcn/ui components
-│   │   ├── kanban/        # KanbanColumn, DealCard
-│   │   ├── dashboard/     # KPICards, PipelineChart, ActivityFeed
-│   │   ├── forms/         # DealForm, ActivityModal
-│   │   └── pwa/           # SyncStatus, InstallPWA
-│   ├── hooks/             # useAuth, useOfflineSync, useSpeech
-│   ├── lib/               # utils, prisma, auth, dexie, speech, validations
-│   └── types/             # Types TypeScript
-├── .env.example
-├── .gitignore
-├── next.config.mjs
-├── tailwind.config.ts
-├── tsconfig.json
-└── package.json
+prisma/
+├── schema.prisma        # Modèles de données
+└── seed.ts              # Étapes du pipeline et données démo
+public/
+├── manifest.json        # Manifest PWA
+├── sw.js                # Service worker (cache de l'application, page hors ligne)
+├── offline.html
+└── icons/               # Icônes PWA
+src/
+├── auth.ts              # NextAuth v5 : lien magique, accès sur invitation
+├── app/
+│   ├── (auth)/login/    # Connexion et page « vérifiez vos e-mails »
+│   ├── (dashboard)/     # Pages protégées : accueil (KPIs), pipeline, entreprises,
+│   │                    # opportunités, tâches
+│   └── api/             # API REST : companies, contacts, opportunities, tasks, activities
+├── components/          # Interface (ui/), Kanban, formulaires, activité, PWA
+├── hooks/               # useOnline, useSpeech (dictée vocale)
+└── lib/
+    ├── access.ts        # Vérifications de périmètre des ressources liées
+    ├── kpi.ts           # Calcul des KPIs (fonctions pures)
+    ├── offline/         # IndexedDB (Dexie) et synchronisation
+    ├── scope.ts         # Règles commercial / chefia
+    ├── time.ts          # Fuseau Europe/Zurich
+    └── validations.ts   # Schémas Zod partagés (formulaires, API, hors ligne)
 ```
+
+## 📴 Périmètre du mode hors ligne
+
+- **Hors ligne** : création d'une activité (visite, appel, e-mail, note), avec dictée, photo et position. Elle est stockée sur l'appareil puis envoyée automatiquement au retour du réseau. L'envoi est idempotent (identifiant UUID généré sur l'appareil).
+- **En ligne uniquement** : création et modification des entreprises, contacts, opportunités et tâches.
+- **Conflits** : pas de modification hors ligne d'une fiche existante, donc pas de conflit à résoudre pour le MVP.
+- **Listes de choix** : entreprises et opportunités sont mises en cache à chaque connexion au réseau.
 
 ## 💰 Coûts Annuels Estimés
 
