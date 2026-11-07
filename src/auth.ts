@@ -5,6 +5,7 @@ import Nodemailer from 'next-auth/providers/nodemailer';
 import { PrismaAdapter } from '@auth/prisma-adapter';
 import nodemailer from 'nodemailer';
 import { prisma } from '@/lib/prisma';
+import { rememberLink } from '@/lib/devLinks';
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 jours, cf. README
 const LINK_MAX_AGE_SECONDS = 15 * 60;
@@ -39,6 +40,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // (pas d'énumération des comptes).
         const user = await prisma.user.findUnique({ where: { email } });
         if (!user) return;
+        rememberLink(email, url); // aperçu de développement uniquement (no-op en production)
 
         if (!mailer) {
           if (process.env.NODE_ENV === 'production') {
